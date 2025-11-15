@@ -6,32 +6,76 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
-// User accounts managing the platform
+// NextAuth.js required models
 model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// Developers managing the platform (creators of apps)
+model User {
   id            String    @id @default(cuid())
-  email         String    @unique
   name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  integrations  Integration[]
+  accounts      Account[]
+  sessions      Session[]
   projects      Project[]
+  integrations  Integration[]
 }
 
-// Projects using the FrictionlessAuthLayer
+// Projects using the FrictionlessAuthLayer (apps built by developers)
 model Project {
   id            String    @id @default(cuid())
   name          String
   slug          String    @unique
   description   String?
   webhookUrl    String?   // Optional webhook URL for this project
+  domain        String?   // Allowed domain for CORS
 
-  accountId     String
-  account       Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -39,8 +83,14 @@ model Project {
   integrations  Integration[]
   envConfigs    EnvConfig[]
   authFlows     AuthFlow[]
+  apiKeys       ApiKey[]
+  endUsers      EndUser[]
+  emailTemplates EmailTemplate[]
+  emailCampaigns EmailCampaign[]
+  subscriptions Subscription[]
 
-  @@index([accountId])
+  @@index([userId])
+  @@index([slug])
 }
 
 // Service integrations (Stripe, SendGrid, etc.)
@@ -51,21 +101,173 @@ model Integration {
   enabled       Boolean   @default(true)
 
   // Encrypted credentials stored as JSON
-  credentials   String    // JSON string of encrypted credentials
-  config        String?   // Additional configuration as JSON
+  credentials   String    @db.Text // JSON string of encrypted credentials
+  config        String?   @db.Text // Additional configuration as JSON
 
   projectId     String
   project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
-  accountId     String
-  account       Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
   @@unique([projectId, type])
   @@index([projectId])
-  @@index([accountId])
+  @@index([userId])
+}
+
+// API Keys for SDK authentication
+model ApiKey {
+  id            String    @id @default(cuid())
+  key           String    @unique // fal_xxxxx
+  name          String    // Friendly name
+  lastUsedAt    DateTime?
+  expiresAt     DateTime?
+
+  projectId     String
+  project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([projectId])
+  @@index([key])
+}
+
+// End users (users of apps built with FrictionlessAuthLayer)
+model EndUser {
+  id                String    @id @default(cuid())
+  email             String
+  name              String?
+  emailVerified     Boolean   @default(false)
+  avatarUrl         String?
+
+  // Metadata
+  metadata          String?   @db.Text // JSON string for custom fields
+
+  // Subscription info
+  stripeCustomerId  String?
+  subscriptionStatus String? // 'active', 'cancelled', 'past_due', etc.
+
+  // Engagement
+  lastLoginAt       DateTime?
+  signupSource      String?   // 'email', 'google', 'github', etc.
+
+  projectId         String
+  project           Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  activities        UserActivity[]
+  subscriptions     Subscription[]
+
+  @@unique([projectId, email])
+  @@index([projectId])
+  @@index([email])
+  @@index([subscriptionStatus])
+}
+
+// User activity tracking (lightweight analytics)
+model UserActivity {
+  id            String    @id @default(cuid())
+  eventType     String    // 'login', 'signup', 'subscription_created', etc.
+  metadata      String?   @db.Text // JSON string
+  ipAddress     String?
+  userAgent     String?
+
+  endUserId     String
+  endUser       EndUser   @relation(fields: [endUserId], references: [id], onDelete: Cascade)
+
+  createdAt     DateTime  @default(now())
+
+  @@index([endUserId])
+  @@index([eventType])
+  @@index([createdAt])
+}
+
+// Subscriptions (synced from Stripe webhooks)
+model Subscription {
+  id                    String    @id @default(cuid())
+  stripeSubscriptionId  String    @unique
+  stripePriceId         String
+  stripeProductId       String
+  status                String    // 'active', 'cancelled', 'past_due', etc.
+  currentPeriodStart    DateTime
+  currentPeriodEnd      DateTime
+  cancelAtPeriodEnd     Boolean   @default(false)
+  canceledAt            DateTime?
+
+  endUserId             String
+  endUser               EndUser   @relation(fields: [endUserId], references: [id], onDelete: Cascade)
+
+  projectId             String
+  project               Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([endUserId])
+  @@index([projectId])
+  @@index([status])
+}
+
+// Email templates
+model EmailTemplate {
+  id            String    @id @default(cuid())
+  name          String
+  subject       String
+  htmlContent   String    @db.Text
+  textContent   String?   @db.Text
+  templateType  String    // 'transactional', 'marketing'
+  category      String    // 'welcome', 'password_reset', 'cancellation', 're_engagement', etc.
+
+  // Dynamic variables like {{userName}}, {{verifyUrl}}
+  variables     String?   @db.Text // JSON array of variable names
+
+  projectId     String
+  project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  campaigns     EmailCampaign[]
+
+  @@index([projectId])
+  @@index([category])
+}
+
+// Email campaigns (for re-engagement, etc.)
+model EmailCampaign {
+  id            String    @id @default(cuid())
+  name          String
+  status        String    // 'draft', 'scheduled', 'sending', 'sent', 'paused'
+
+  templateId    String
+  template      EmailTemplate @relation(fields: [templateId], references: [id])
+
+  // Segmentation
+  segment       String?   @db.Text // JSON query for filtering EndUsers
+
+  // Scheduling
+  scheduledAt   DateTime?
+  sentAt        DateTime?
+
+  // Stats
+  sentCount     Int       @default(0)
+  openedCount   Int       @default(0)
+  clickedCount  Int       @default(0)
+
+  projectId     String
+  project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([projectId])
+  @@index([status])
 }
 
 // Generated environment configurations

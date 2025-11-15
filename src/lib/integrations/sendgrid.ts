@@ -5,6 +5,7 @@
 import sgMail from '@sendgrid/mail'
 import { decrypt } from '../utils/crypto'
 import { prisma } from '../prisma'
+import { EmailProvider, EmailMessage, EmailResult } from './email-provider'
 
 export interface SendGridCredentials {
   api_key: string
@@ -21,11 +22,12 @@ export interface EmailTemplate {
   dynamicTemplateData?: Record<string, any>
 }
 
-export class SendGridIntegration {
+export class SendGridIntegration extends EmailProvider {
   private credentials: SendGridCredentials | null = null
   private initialized = false
 
   constructor(credentials?: SendGridCredentials) {
+    super()
     if (credentials) {
       this.credentials = credentials
       this.initialize()
@@ -64,6 +66,38 @@ export class SendGridIntegration {
 
     sgMail.setApiKey(this.credentials.api_key)
     this.initialized = true
+  }
+
+  /**
+   * Send a single email (EmailProvider interface)
+   */
+  async send(message: EmailMessage): Promise<EmailResult> {
+    return this.sendEmail({
+      to: message.to,
+      subject: message.subject,
+      text: message.text,
+      html: message.html,
+      templateId: message.templateId,
+      dynamicTemplateData: message.templateData
+    })
+  }
+
+  /**
+   * Send bulk emails (EmailProvider interface)
+   */
+  async sendBatch(messages: EmailMessage[]): Promise<{ success: boolean; sent: number; failed: number }> {
+    const results = await Promise.allSettled(
+      messages.map(msg => this.send(msg))
+    )
+
+    const sent = results.filter(r => r.status === 'fulfilled' && r.value.success).length
+    const failed = results.length - sent
+
+    return {
+      success: failed === 0,
+      sent,
+      failed
+    }
   }
 
   /**
