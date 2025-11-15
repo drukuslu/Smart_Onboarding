@@ -1,0 +1,123 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// User accounts managing the platform
+model Account {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  integrations  Integration[]
+  projects      Project[]
+}
+
+// Projects using the FrictionlessAuthLayer
+model Project {
+  id            String    @id @default(cuid())
+  name          String
+  slug          String    @unique
+  description   String?
+  webhookUrl    String?   // Optional webhook URL for this project
+
+  accountId     String
+  account       Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  integrations  Integration[]
+  envConfigs    EnvConfig[]
+  authFlows     AuthFlow[]
+
+  @@index([accountId])
+}
+
+// Service integrations (Stripe, SendGrid, etc.)
+model Integration {
+  id            String    @id @default(cuid())
+  type          String    // 'stripe', 'sendgrid', 'oauth_google', 'oauth_github', etc.
+  name          String
+  enabled       Boolean   @default(true)
+
+  // Encrypted credentials stored as JSON
+  credentials   String    // JSON string of encrypted credentials
+  config        String?   // Additional configuration as JSON
+
+  projectId     String
+  project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  accountId     String
+  account       Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([projectId, type])
+  @@index([projectId])
+  @@index([accountId])
+}
+
+// Generated environment configurations
+model EnvConfig {
+  id            String    @id @default(cuid())
+  key           String
+  value         String
+  description   String?
+  isSecret      Boolean   @default(false)
+
+  projectId     String
+  project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([projectId, key])
+  @@index([projectId])
+}
+
+// Authentication flow templates
+model AuthFlow {
+  id            String    @id @default(cuid())
+  name          String
+  template      String    // 'stripe-onboarding', 'email-password', 'oauth-social', etc.
+  fields        String    // JSON string of form fields
+  customFields  String?   // Additional custom fields from builder
+
+  projectId     String
+  project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([projectId])
+}
+
+// SmartHooks event log (for debugging and tracking)
+model WebhookEvent {
+  id            String    @id @default(cuid())
+  eventType     String    // 'user.signup', 'user.login', etc.
+  payload       String    // JSON payload sent
+  signature     String    // HMAC signature
+  status        String    // 'pending', 'sent', 'failed'
+  response      String?   // Response from SmartHooks
+
+  projectId     String?
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([eventType])
+  @@index([status])
+  @@index([createdAt])
+}
